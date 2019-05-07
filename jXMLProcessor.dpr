@@ -8,7 +8,8 @@ program jXMLProcessor;
 {$APPTYPE CONSOLE}
 
 uses
-  SysUtils, Classes,
+  SysUtils,
+  Classes,
   uJSON in 'uJSON.pas',
   AXMLParser in 'AXMLParser.pas';
 
@@ -16,9 +17,9 @@ const
   NameStr = 'Jkh''s Android XML Processor';
   VersionStr = 'Version 0.1';
   HelpStr = #13#10' > %s --input [TargetFile] --output [TargetFile] --command [Command] --filecommand [Filename] --option [filestream]';
-  CommandHelpStr = #13#10'   Command example'#13#10'   {''select'':[''application'', ''uses-sdk''], ''target'':''tag|property'', ''command'':''add|modify|remove|print''}';
+  CommandHelpStr = #13#10'   Command example'#13#10'   {''select-node'':[''application'', ''uses-sdk''], ''target'':''tag|property'', ''command'':''add|modify|remove|print'', ''name'':''value''}';
   ErrorCodeStr = 'Error code : %d';
-  
+
 var
   Worker: TAXMLParser;
   ParamLoop: Integer;
@@ -26,8 +27,6 @@ var
 
   NextCommand: String;
 
-  WorkOnFile: Boolean;
-  
   TargetFileName,
   OutputFileName: TFileName;
   WorkCommand: String;
@@ -55,7 +54,7 @@ var
   begin
     If Not Assigned(Worker) Then Exit;
 
-    PrepareFlag := Worker.LoadFromFile(TargetFileName, WorkOnFile);
+    PrepareFlag := Worker.LoadFromFile(TargetFileName);
     If PrepareFlag < 0 Then
     Begin
        writeln(Format(ErrorCodeStr, [PrepareFlag]));
@@ -81,7 +80,6 @@ begin
   TargetFileName := '';
   OutputFileName := '';
   WorkCommand := '';
-  WorkOnFile := False;
 
   While (ParamCount >= ParamLoop) do
   Begin
@@ -102,7 +100,9 @@ begin
         Else If (NextCommand = '--filecommand') or (NextCommand = '-f') Then
         Begin
            WorkCommand := LoadFile(ParamStr(ParamLoop));
-        End
+        End;
+        {
+        // no more support FileStream.
         Else If (NextCommand = '--option') or (NextCommand = '-p') Then
         Begin
            If ParamStr(ParamLoop) = 'filestream' Then
@@ -110,6 +110,7 @@ begin
               WorkOnFile := True;
            End;
         End;
+        }
 
         NextCommand := '';
      End;
