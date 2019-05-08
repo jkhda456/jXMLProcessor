@@ -17,7 +17,7 @@ const
   NameStr = 'Jkh''s Android XML Processor';
   VersionStr = 'Version 0.1';
   HelpStr = #13#10' > %s --input [TargetFile] --output [TargetFile] --command [Command] --filecommand [Filename] --option [filestream]';
-  CommandHelpStr = #13#10'   Command example'#13#10'   {''select-node'':[''application'', ''uses-sdk''], ''target'':''tag|property'', ''command'':''add|modify|remove|print'', ''name'':''value''}';
+  CommandHelpStr = #13#10'   Command example'#13#10'   {''select-node'':[''application'', ''uses-sdk''],'#13#10'    ''command'':''make-tag|rename-tag|remove-tag|make-property|rename-property|remove-property|change-property-value|print'','#13#10'    ''taget'':''...'', ''value'':''...'', ''option'':''...''';
   ErrorCodeStr = 'Error code : %d';
 
 var
@@ -51,6 +51,17 @@ var
   procedure ProcessCommand(const WorkCommand: TJSONObject);
   var
     PrepareFlag: Integer;
+    SelectArray: TJSONArray;
+    StartIdx, EndIdx: Integer;
+    LevelCandidate,
+    LevelIdx: Integer;
+    LineStr,
+    TargetMatch,
+    MatchStr: String;
+    MatchCount,
+    LoopVar: Integer;
+    MatchTestList: TStringList;
+    ParsedCommand: String;
   begin
     If Not Assigned(Worker) Then Exit;
 
@@ -61,16 +72,89 @@ var
        Exit;
     End;
 
-    writeln(WorkCommand.toString());
+    ParsedCommand := Trim(WorkCommand.getStringSlient('command'));
+    // not work.
+    If ParsedCommand = '' Then Exit;
+    // writeln(WorkCommand.toString());
+
+    LevelIdx := -1;
+    StartIdx := 0;
+    MatchCount := 0;
+    EndIdx := Worker.TagsCount-1;
+
+    // first. select nodes.
+    SelectArray := WorkCommand.getJSONArraySlient('select-node');
+    If Assigned(SelectArray) and (SelectArray.toString <> 'null') and (SelectArray.length > 0) Then
+    Begin
+       TargetMatch := SelectArray.getString(0);
+       For LoopVar := 1 to SelectArray.length-1 do
+          TargetMatch := TargetMatch + #0 + SelectArray.getString(LoopVar);
+       TargetMatch := LowerCase(TargetMatch);
+
+       For LoopVar := StartIdx to EndIdx do
+       Begin
+          MatchStr := Worker.ReadTags(LoopVar, rfTagNamesLevel);
+          If MatchStr = '' Then Continue;
+
+          If TargetMatch = LowerCase(MatchStr) Then
+          Begin
+             // Found Start.
+             MatchStr := Worker.ReadTags(LoopVar, rfTagLevel);
+             If MatchStr <> '' Then
+             Begin
+                TryStrToInt(MatchStr, LevelIdx);
+                StartIdx := LoopVar;
+             End;
+
+             Break;
+          End;
+       End;
+
+       If (LevelIdx >= 0) Then
+       Begin
+          For LoopVar := StartIdx+1 to EndIdx do
+          Begin
+             MatchStr := Worker.ReadTags(LoopVar, rfTagLevel);
+             If MatchStr = '' Then Continue;
+
+             TryStrToInt(MatchStr, LevelCandidate);
+             If LevelCandidate <= LevelIdx Then
+             Begin
+                EndIdx := LoopVar;
+                Break;
+             End;
+          End;
+       End;
+    End;
+
+    // now start work!
+    If ParsedCommand = 'print' Then
+    Begin
+       For LoopVar := StartIdx to EndIdx do
+       Begin
+          LineStr := Worker.ReadTags(LoopVar, rfXMLType, 1);
+          If LineStr = '' Then Continue;
+
+          writeln(LineStr);
+       End;
+    End
+    Else If ParsedCommand = 'change-property-value' Then
+    Begin
+       For LoopVar := StartIdx to EndIdx do
+       Begin
+          Worker.RepleaceTags(LoopVar, repfPrepertyValue, $03, WorkCommand.getStringSlient('target'), WorkCommand.getStringSlient('value'));
+       End;
+    End;
+
   end;
 begin
-  writeln(NameStr + ' ' + VersionStr);
-
   If ParamCount < 1 Then
   Begin
+     writeln(NameStr + ' ' + VersionStr);
+
      writeln(Format(HelpStr, [ExtractFileName(ParamStr(0))]));
      writeln(CommandHelpStr);
-     
+
      Exit;
   End;
 
@@ -149,6 +233,11 @@ begin
                  Break;
               End;
         End;
+     End;
+
+     If OutputFileName <> '' Then
+     Begin
+        Worker.SaveAsFile(OutputFileName);
      End;
   Finally
      If Assigned(WorkJSON) Then WorkJSON.Free;

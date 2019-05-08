@@ -55,6 +55,9 @@ type
   end;
   PAbstractChunk = ^TAbstractChunk;
 
+  TReadFlag = (rfXMLType, rfTagNameOnly, rfTagNamesLevel, rfTagLevel, rfTagAttributes, rfTagAttributeStringList);
+  TReplaceFlag = (repfTagName, repfPropertyName, repfPrepertyValue);
+
   TAXMLParser = class
   private
     FAXMLFileStream: TStream;
@@ -81,8 +84,13 @@ type
   protected
     function LoadAXMLStream: Integer;
 
+    // Position unsafe methods
     function GetResourceId(const ResIdx: Integer): Integer;
+    function GetResourceString(Id: Longword): String;
     function GetStringPool(const Index: Longword; Trimming: Boolean = True): String;
+    function SearchStringPool(TargetString: String): Integer;
+    function AppendStringPool(NewString: String): Integer;
+    function CountStringPool: Integer;
 
     // Cursor based function
     procedure ResetCursor;
@@ -95,6 +103,12 @@ type
 
     function IsValidAXML: Integer;  // Not work..
 
+    function TagsCount: Integer;
+    function ReadTags(AIndex: Integer; AReadFlag: TReadFlag; AFlag: Integer = 0): String;
+    // AValueType must be $03!!!
+    function RepleaceTags(AIndex: Integer; AReplaceFlag: TReplaceFlag; AValueType: Integer; ASearchValue, AReplaceValue: String): Integer;
+
+    function SaveAsFile(AFileName: TFileName): Integer;
     function LoadFromFile(AFileName: TFileName; AOnMemory: Boolean = True): Integer;
   end;
 
@@ -141,7 +155,191 @@ begin
   PointerToS := @S[1];
   Move(PointerToS^, Src^, SLength);
 end;
-  
+
+function TAXMLParser.AppendStringPool(NewString: String): Integer;
+var
+  StringPoolMax: Integer;
+  LoopVar: Integer;
+  WorkChunk: PAbstractChunk;
+  KeepPosition,
+  NewPoolOffset,
+  OldValue,
+  NewValue: Longword;
+  UTF8Flag: Boolean;
+  WorkStrChunk: TStringChunk;
+  StrPoolReadLoop: Integer;
+  OffsetStart,
+  LastOffset: Longword;
+  ReadStrLength: Longword;
+  WorkByte: Byte;
+  WriteString: String;
+  NewStringW: WideString;
+
+  function IncToChunk(IncSize: Integer): Longword;
+  begin
+    KeepPosition := FAXMLFileStream.Position;
+    OldValue := PopDWORDDataFromChunk;
+    Result := OldValue;
+    NewValue := OldValue + IncSize;
+    FAXMLFileStream.Position := KeepPosition;
+    FAXMLFileStream.Write(NewValue, SizeOf(Longword));
+  end;
+begin
+  StringPoolMax := CountStringPool;
+
+  // need append new item.
+  For LoopVar := FChunkList.Count-1 DownTo 0 do
+  Begin
+     WorkChunk := FChunkList[LoopVar];
+     If WorkChunk^.ChunkType <> CONST_RType_StringPool Then Continue;
+     // Modify last item only!
+
+     With WorkChunk^ do
+     Begin
+        FAXMLFileStream.Position := ChunkStartPos + 4;
+
+        PopDWORDDataFromChunk; // ChunkSize
+        // Change String Count;
+        WorkStrChunk.StringCount := IncToChunk(1);
+
+        // Read step.
+        WorkStrChunk.StyleCount := PopDWORDDataFromChunk; // Style Count
+        WorkStrChunk.Flags := PopDWORDDataFromChunk; // Flags
+        UTF8Flag := (WorkStrChunk.Flags and 256) <> 0; // (1 << 8)
+
+        OffsetStart := FAXMLFileStream.Position;
+        WorkStrChunk.StringPoolOffset := PopDWORDDataFromChunk; // Useless..
+        WorkStrChunk.StylePoolOffset := PopDWORDDataFromChunk; // Useless..
+
+        // getting string last pool info
+        FAXMLFileStream.Position := FAXMLFileStream.Position + ((WorkStrChunk.StringCount-1) * Sizeof(Longword));
+        LastOffset := PopDWORDDataFromChunk;
+        KeepPosition := FAXMLFileStream.Position;
+
+        FAXMLFileStream.Position := WorkStrChunk.StringPoolOffset + LastOffset + 8;
+        If UTF8Flag Then
+        Begin
+           //
+           PopBYTEDataFromChunk;
+           ReadStrLength := PopBYTEDataFromChunk;
+
+           If (ReadStrLength and $80) <> 0 Then
+           Begin
+              PopBYTEDataFromChunk;
+           End;
+
+           If (ReadStrLength <> 0) Then
+              PopNullTerminateStr();
+
+           WriteString := #0#0 + NewString + #0;
+           WorkByte := Length(NewString);
+           Move(WorkByte, WriteString[2], 1);
+           InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, FAXMLFileStream.Position, WriteString);
+
+           NewPoolOffset := LastOffset + ReadStrLength + 3;
+           SetLength(WriteString, SizeOf(NewPoolOffset));
+           Move(NewPoolOffset, WriteString[1], SizeOf(NewPoolOffset));
+           InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, KeepPosition, WriteString);
+
+           FAXMLFileStream.Position := OffsetStart;
+           IncToChunk(4); // String Pool offset
+           IncToChunk(Length(NewString) + 3); // Style Pool offset
+
+           FAXMLFileStream.Position := ChunkStartPos + 4;
+           // Change ChunkSize (+4)
+           IncToChunk(4 + Length(NewString) + 3);
+        End
+        Else
+        Begin
+           ReadStrLength := PopWORDDataFromChunk;
+
+           If (ReadStrLength and $8000) <> 0 Then
+           Begin
+              ReadStrLength := ((ReadStrLength and $7FFF) shl 16) or PopWORDDataFromChunk;
+           End;
+
+           PopSizeAssignedWideStr(ReadStrLength);
+
+           // Convert Wide string.
+           NewStringW := NewString;
+           SetLength(WriteString, Length(NewString) * SizeOf(WideChar));
+           Move(NewStringW[1], WriteString[1], Length(NewString) * SizeOf(WideChar));
+           WriteString := #0#0 + NewString + #0;
+           WorkByte := Length(NewString);
+           Move(WorkByte, WriteString[2], 1);
+           InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, FAXMLFileStream.Position, WriteString);
+        End;
+
+     End;
+
+     Result := StringPoolMax;
+
+     Exit;
+  End;
+end;
+
+function TAXMLParser.CountStringPool: Integer;
+var
+  ChunkLoop: Integer;
+  LoopVar: Integer;
+  WorkChunk: PAbstractChunk;
+  WorkStrChunk: TStringChunk;
+
+  StrPoolReadLoop: Integer;
+  StrPoolList: TList;
+
+  UTF8Flag: Boolean;
+  ReadStrLength: Longword;
+  LastOffset: Longword;
+begin
+  Result := 0;
+  LoopVar := 0;
+  If Not Assigned(FAXMLFileStream) Then Exit;
+
+  // Init Structure...
+  FillChar(WorkStrChunk, SizeOf(WorkStrChunk), 0);
+
+  StrPoolList := TList.Create;
+  Try
+     For ChunkLoop := 0 to FChunkList.Count-1 do
+     Begin
+        WorkChunk := FChunkList[ChunkLoop];
+        If WorkChunk^.ChunkType <> CONST_RType_StringPool Then Continue;
+
+        // ChunkFound.
+        With WorkChunk^ do
+        Begin
+           // do not trust String Count.
+           // Type | Size | Str Count | Style Count | Reserved | Str Pool Offset | Style Pool Offset | Str Offsets | Style Offsets
+
+           // Not Valid Chunk! Step NEXT.
+           If ChunkEndPos <= 0 Then Continue;
+
+           WorkStrChunk.ChunkType := ChunkType;
+           FAXMLFileStream.Position := ChunkStartPos + 4;
+
+           WorkStrChunk.ChunkSize := PopDWORDDataFromChunk;
+           WorkStrChunk.StringCount := PopDWORDDataFromChunk;
+           WorkStrChunk.StyleCount := PopDWORDDataFromChunk; // Useless..
+           WorkStrChunk.Flags := PopDWORDDataFromChunk; // Useless..
+           UTF8Flag := (WorkStrChunk.Flags and 256) <> 0; // (1 << 8)
+
+           WorkStrChunk.StringPoolOffset := PopDWORDDataFromChunk; // Useless..
+           WorkStrChunk.StylePoolOffset := PopDWORDDataFromChunk; // Useless..
+
+           // Check Data for Obfuscate...
+           If (WorkStrChunk.StringPoolOffset >= ChunkEndPos) or (WorkStrChunk.StringPoolOffset <= ChunkStartPos) Then
+              WorkStrChunk.StringPoolOffset := 0; // do not use
+
+           Result := Result + WorkStrChunk.StringCount;
+        End;
+     End;
+
+  Finally
+     StrPoolList.Free;
+  End;
+end;
+
 function TAXMLParser.CountTagInDepth: Integer;
 begin
   
@@ -203,6 +401,18 @@ begin
   End;
 end;
 
+function TAXMLParser.GetResourceString(Id: Longword): String;
+var
+  ParseId: Longword;
+begin
+  Result := '';
+  ParseId := GetResourceId(Id);
+  If ParseId <= High(CONST_ResourceStr) Then
+  Begin
+     Result := CONST_ResourceStr[ParseId];
+  End;
+end;
+
 function TAXMLParser.GetStringPool(const Index: Longword; Trimming: Boolean): String;
 var
   ChunkLoop: Integer;
@@ -216,19 +426,6 @@ var
   UTF8Flag: Boolean;
   ReadStrLength: Longword;
   LastOffset: Longword;
-
-  function GetResourceString(Id: Longword): String;
-  var
-    ParseId: Longword;
-  begin
-    Result := '';
-    ParseId := GetResourceId(Id);
-    If ParseId <= High(CONST_ResourceStr) Then
-    Begin
-       Result := CONST_ResourceStr[ParseId];
-    End;
-  end;
-
 begin
   Result := '';
   LoopVar := 0;
@@ -372,7 +569,7 @@ var
   end;
 begin
   // (!) Name Space not care..
-  
+
   Result := '';
   If (ListIndex < 0) or (ListIndex >= FChunkList.Count) Then Exit;
 
@@ -543,6 +740,8 @@ begin
         :ReadChunk;
      End;
   End;
+
+  Result := 0;
 end;
 
 function TAXMLParser.LoadFromFile(AFileName: TFileName; AOnMemory: Boolean): Integer;
@@ -568,7 +767,8 @@ begin
 
   Result := LoadAXMLStream;
 
-  TestParser;
+  // for Debug!
+  // TestParser;
 end;
 
 function TAXMLParser.PopBYTEDataFromChunk: Byte;
@@ -631,6 +831,72 @@ begin
   FAXMLFileStream.Read(Result, 2);
 end;
 
+function TAXMLParser.ReadTags(AIndex: Integer; AReadFlag: TReadFlag; AFlag: Integer): String;
+var
+  WorkChunk: PAbstractChunk;
+  StrIdx: Longword;
+  PrevLevel: Integer;
+  LoopVar: Integer;
+begin
+  Result := '';
+  If (AIndex < 0) or (AIndex >= FChunkList.Count) Then Exit;
+
+  WorkChunk := FChunkList[AIndex];
+  If (WorkChunk^.ChunkType <> CONST_RType_XMLStartElement) and (WorkChunk^.ChunkType <> CONST_RType_XMLEndElement) Then Exit;
+
+  // process.
+  Case AReadFlag of
+     rfXMLType:
+     Begin
+        // Print Option
+        If AFlag = 1 Then
+        Begin
+           Result := StringOfChar(#9, WorkChunk^.ChunkLevel-1);
+        End;
+
+        Result := Result + GetTag(AIndex);
+     End;
+
+     rfTagNameOnly:
+     Begin
+     End;
+
+     rfTagNamesLevel:
+     Begin
+        If (WorkChunk^.ChunkType = CONST_RType_XMLEndElement) Then Exit;
+
+        PrevLevel := WorkChunk^.ChunkLevel;
+        FAXMLFileStream.Position := WorkChunk^.ChunkStartPos + 20;
+        StrIdx := PopDWORDDataFromChunk;
+        Result := GetStringPool(StrIdx);
+
+        For LoopVar := AIndex DownTo 0 do
+        Begin
+           WorkChunk := FChunkList[LoopVar];
+           If (WorkChunk^.ChunkType <> CONST_RType_XMLStartElement) or (WorkChunk^.ChunkLevel >= PrevLevel) Then Continue;
+
+           PrevLevel := WorkChunk^.ChunkLevel;
+           FAXMLFileStream.Position := WorkChunk^.ChunkStartPos + 20;
+           StrIdx := PopDWORDDataFromChunk;
+           Result := GetStringPool(StrIdx) + #0 + Result;
+        End;
+     End;
+
+     rfTagLevel:
+     Begin
+        Result := IntToStr(WorkChunk^.ChunkLevel);
+     End;
+
+     rfTagAttributes:
+     Begin
+     End;
+
+     rfTagAttributeStringList:
+     Begin
+     End;
+  End;
+end;
+
 procedure TAXMLParser.ReleaseLists;
 var
   LoopVar: Integer;
@@ -648,14 +914,138 @@ begin
   FAXMLFileStream := Nil;
 end;
 
+function TAXMLParser.RepleaceTags(AIndex: Integer;
+  AReplaceFlag: TReplaceFlag; AValueType: Integer; ASearchValue,
+  AReplaceValue: String): Integer;
+var
+  WorkChunk: PAbstractChunk;
+  TagName: Longword;
+  AttributeCount: Longword;
+  LoopVar: Integer;
+  AttributeList: TList;
+  AttributeData: PAttributeItem;
+  CompareString: String;
+  StringIndex: Integer;
+  NewValue: Longword;
+  KeepPosition: Longword;
+begin
+  If (AIndex < 0) or (AIndex >= FChunkList.Count) Then Exit;
+
+  WorkChunk := FChunkList[AIndex];
+  If (WorkChunk^.ChunkType <> CONST_RType_XMLStartElement) and (WorkChunk^.ChunkType <> CONST_RType_XMLEndElement) Then Exit;
+
+  Case AReplaceFlag of
+     repfPrepertyValue:
+     With WorkChunk^ do
+     Begin
+        FAXMLFileStream.Position := ChunkStartPos + 8;
+
+        PopDWORDDataFromChunk; // line number
+        PopDWORDDataFromChunk; // comment
+        PopDWORDDataFromChunk; // namespace
+        TagName := PopDWORDDataFromChunk; // name
+
+        Case ChunkType of
+           CONST_RType_XMLStartElement:
+           Begin
+              PopDWORDDataFromChunk; // attribute size
+              AttributeCount := PopWORDDataFromChunk; // attribute count
+              PopWORDDataFromChunk; // id index
+              PopWORDDataFromChunk; // class index
+              PopWORDDataFromChunk; // style index
+
+              KeepPosition := FAXMLFileStream.Position;
+
+              AttributeList := TList.Create;
+              Try
+                 For LoopVar := 1 to AttributeCount do
+                 Begin
+                    GetMem(AttributeData, SizeOf(TAttributeItem));
+                    PopUserData(AttributeData^, SizeOf(TAttributeItem));
+
+                    AttributeList.Add( AttributeData );
+                 End;
+
+                 For LoopVar := 0 to AttributeList.Count-1 do
+                 Begin
+                    AttributeData := AttributeList[LoopVar];
+
+                    // 
+                    If AttributeData^.DataType = AValueType Then
+                    Begin
+                       If AValueType = $03 Then
+                       Begin
+                          CompareString := GetStringPool(AttributeData^.Data);
+                          If CompareString = ASearchValue Then
+                          Begin
+                             StringIndex := SearchStringPool(AReplaceValue);
+                             If StringIndex < 0 Then
+                                NewValue := CountStringPool
+                             Else
+                                NewValue := StringIndex;
+
+                             FAXMLFileStream.Position := KeepPosition + (LoopVar * SizeOf(TAttributeItem)) + (4*SizeOf(Longword));
+                             FAXMLFileStream.Write(NewValue, Sizeof(Longword));
+
+                             If StringIndex < 0 Then
+                                AppendStringPool(AReplaceValue); 
+                          End;
+                       End;
+                    End;
+
+                    FreeMem(AttributeData);
+                 End;
+              Finally
+                 AttributeList.Free;
+              End;
+           End;
+        End;
+     End;
+  End;
+end;
+
 procedure TAXMLParser.ResetCursor;
 begin
 
 end;
 
+function TAXMLParser.SaveAsFile(AFileName: TFileName): Integer;
+begin
+  Result := -1;
+
+  (FAXMLFileStream as TMemoryStream).SaveToFile(AFileName);
+
+  Result := 0;
+end;
+
+function TAXMLParser.SearchStringPool(TargetString: String): Integer;
+var
+  StringPoolMax: Integer;
+  LoopVar: Integer;
+begin
+  Result := -1;
+  StringPoolMax := CountStringPool;
+
+  // Search PrevStringItem
+  For LoopVar := 0 to StringPoolMax - 1 do
+  Begin
+     // Found in previous string pool
+     If GetStringPool(LoopVar) = TargetString Then
+     Begin
+        Result := LoopVar;
+        Exit;
+     End;
+  End;
+end;
+
 function TAXMLParser.SearchTagInDepth(SearchTag: String): Integer;
 begin
 
+end;
+
+function TAXMLParser.TagsCount: Integer;
+begin
+  Result := FChunkList.Count;
 end;
 
 procedure TAXMLParser.TestParser;
@@ -664,7 +1054,7 @@ var
   WorkChunk: PAbstractChunk;
 begin
   //
-  For LoopVar := 1 to FChunkList.Count-1 do
+  For LoopVar := 1 to TagsCount-1 do
   Begin
      WorkChunk := FChunkList[LoopVar];
      If (WorkChunk^.ChunkType = CONST_RType_XMLStartElement) or (WorkChunk^.ChunkType = CONST_RType_XMLEndElement) Then
