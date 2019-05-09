@@ -17,7 +17,7 @@ const
   NameStr = 'Jkh''s Android XML Processor';
   VersionStr = 'Version 0.1';
   HelpStr = #13#10' > %s --input [TargetFile] --output [TargetFile] --command [Command] --filecommand [Filename] --option [filestream]';
-  CommandHelpStr = #13#10'   Command example'#13#10'   {''select-node'':[''application'', ''uses-sdk''],'#13#10'    ''command'':''make-tag|rename-tag|remove-tag|make-property|rename-property|remove-property|change-property-value|print'','#13#10'    ''taget'':''...'', ''value'':''...'', ''option'':''...''';
+  CommandHelpStr = #13#10'   Command example'#13#10'   {''select-node'':[''application'', ''uses-sdk''],'#13#10'    ''command'':''make-tag|rename-tag|remove-tag|make-property|rename-property|remove-property|change-property-value|print'','#13#10'    ''taget'':''...'', ''name'':''...'', ''value'':''...'', ''option'':''...''';
   ErrorCodeStr = 'Error code : %d';
 
 var
@@ -138,11 +138,30 @@ var
           writeln(LineStr);
        End;
     End
-    Else If ParsedCommand = 'change-property-value' Then
+    Else If ParsedCommand = 'make-property' Then
     Begin
+       If WorkCommand.isNull('name') or WorkCommand.isNull('value') Then
+       Begin
+          writeln(' - name,value pair not exists');
+          Exit;
+       End;
+
        For LoopVar := StartIdx to EndIdx do
        Begin
-          Worker.RepleaceTags(LoopVar, repfPrepertyValue, $03, WorkCommand.getStringSlient('target'), WorkCommand.getStringSlient('value'));
+          If Worker.MakeTags(LoopVar, mkfProperty, $03, WorkCommand.getStringSlient('name'), WorkCommand.getStringSlient('value')) = 0 Then Exit;
+       End;
+    End
+    Else If ParsedCommand = 'change-property-value' Then
+    Begin
+       If WorkCommand.isNull('target') or WorkCommand.isNull('value') Then
+       Begin
+          writeln(' - target,value pair not exists');
+          Exit;
+       End;
+
+       For LoopVar := StartIdx to EndIdx do
+       Begin
+          If Worker.RepleaceTags(LoopVar, repfPrepertyValue, $03, WorkCommand.getStringSlient('target'), WorkCommand.getStringSlient('value')) = 0 Then Exit;
        End;
     End;
 

@@ -57,6 +57,7 @@ type
 
   TReadFlag = (rfXMLType, rfTagNameOnly, rfTagNamesLevel, rfTagLevel, rfTagAttributes, rfTagAttributeStringList);
   TReplaceFlag = (repfTagName, repfPropertyName, repfPrepertyValue);
+  TMakeFlag = (mkfTag, mkfProperty);
 
   TAXMLParser = class
   private
@@ -76,6 +77,9 @@ type
     function PopSizeAssignedStr(ASize: Longword): String;
     function PopSizeAssignedWideStr(ASize: Longword): WideString;
     function PopUserData(var OutData; DataSize: Longword): Integer;
+
+    function IncDWORDData(AIncSize: Integer): Longword;
+    function IncWORDData(AIncSize: Integer): Word;
 
     procedure ReleaseStream;
     procedure ReleaseLists;
@@ -107,6 +111,7 @@ type
     function ReadTags(AIndex: Integer; AReadFlag: TReadFlag; AFlag: Integer = 0): String;
     // AValueType must be $03!!!
     function RepleaceTags(AIndex: Integer; AReplaceFlag: TReplaceFlag; AValueType: Integer; ASearchValue, AReplaceValue: String): Integer;
+    function MakeTags(AIndex: Integer; AMakeFlag: TMakeFlag; AValueType: Integer; AName, AValue: String): Integer;
 
     function SaveAsFile(AFileName: TFileName): Integer;
     function LoadFromFile(AFileName: TFileName; AOnMemory: Boolean = True): Integer;
@@ -145,7 +150,8 @@ var
   SLength, OldSize: Integer;
   Src, Dst, PointerToS: ^Char;
 begin
-  if Index > MS.Size then Index := MS.Size;
+  if Index > MS.Size then Exit; // Index := MS.Size;
+
   SLength := Length(S);
   OldSize := MS.Size;
   MS.SetSize(MS.Size + SLength);
@@ -649,6 +655,36 @@ begin
   End;
 end;
 
+function TAXMLParser.IncDWORDData(AIncSize: Integer): Longword;
+var
+  OldValue, NewValue,
+  KeepPosition: Longword;
+begin
+  KeepPosition := FAXMLFileStream.Position;
+  OldValue := PopDWORDDataFromChunk;
+  Result := OldValue;
+  If OldValue <= 0 Then Exit;
+
+  NewValue := OldValue + AIncSize;
+  FAXMLFileStream.Position := KeepPosition;
+  FAXMLFileStream.Write(NewValue, SizeOf(Longword));
+end;
+
+function TAXMLParser.IncWORDData(AIncSize: Integer): Word;
+var
+  OldValue, NewValue: Word;
+  KeepPosition: Longword;
+begin
+  KeepPosition := FAXMLFileStream.Position;
+  OldValue := PopWORDDataFromChunk;
+  Result := OldValue;
+  If OldValue <= 0 Then Exit;
+
+  NewValue := OldValue + AIncSize;
+  FAXMLFileStream.Position := KeepPosition;
+  FAXMLFileStream.Write(NewValue, SizeOf(Word));
+end;
+
 function TAXMLParser.IsValidAXML: Integer;
 begin
   Result := -1; // not impl...
@@ -791,6 +827,97 @@ begin
 
   // for Debug!
   // TestParser;
+end;
+
+function TAXMLParser.MakeTags(AIndex: Integer; AMakeFlag: TMakeFlag;
+  AValueType: Integer; AName, AValue: String): Integer;
+var
+  WorkChunk: PAbstractChunk;
+  TagName: Longword;
+  AttributeCount: Longword;
+  LoopVar: Integer;
+  AttributeData: PAttributeItem;
+  StringIndex: Integer;
+  MaxValueIndex: Longword;
+  NewName, NewValue: Integer;
+  NewAttribute: TAttributeItem;
+  KeepPosition: Longword;
+  WriteString: String;
+begin
+  Result := -1;
+  If (AIndex < 0) or (AIndex >= FChunkList.Count) Then Exit;
+
+  WorkChunk := FChunkList[AIndex];
+  If (WorkChunk^.ChunkType <> CONST_RType_XMLStartElement) Then Exit; // and (WorkChunk^.ChunkType <> CONST_RType_XMLEndElement) 
+
+  Case AMakeFlag of
+     mkfProperty:
+     With WorkChunk^ do
+     Begin
+        FAXMLFileStream.Position := ChunkStartPos + 4;
+        IncDWORDData( SizeOf(NewAttribute) ); // apply new Chunk size.
+
+        PopDWORDDataFromChunk; // line number
+        PopDWORDDataFromChunk; // comment
+        PopDWORDDataFromChunk; // namespace
+        TagName := PopDWORDDataFromChunk; // name
+
+        Case ChunkType of
+           CONST_RType_XMLStartElement:
+           Begin
+              FillChar(NewAttribute, SizeOf(NewAttribute), 0);
+
+              IncDWORDData( SizeOf(NewAttribute) ); // attribute size
+              AttributeCount := IncWORDData(1); // attribute count
+              PopWORDDataFromChunk; // id index
+              PopWORDDataFromChunk; // class index
+              PopWORDDataFromChunk; // style index
+
+              KeepPosition := FAXMLFileStream.Position; // 2350 first.
+
+              // Make prepare!
+              NewName := SearchStringPool(AName);
+              NewValue := SearchStringPool(AValue);
+              MaxValueIndex := CountStringPool;
+
+              // Make New Attribute
+              Begin
+                 NewAttribute.Namespace := 0;
+                 // set Name
+                 If NewName < 0 Then
+                 Begin
+                    NewAttribute.Name := MaxValueIndex;
+                    MaxValueIndex := MaxValueIndex + 1;
+                 End
+                 Else
+                    NewAttribute.Name := NewName;
+                 // set Value
+                 If NewValue < 0 Then
+                    NewAttribute.RawValue := MaxValueIndex
+                 Else
+                    NewAttribute.RawValue := NewValue;
+                 NewAttribute.Size := $08; // Name Value pair.
+                 NewAttribute.DataType := $03;
+                 NewAttribute.Data := NewAttribute.RawValue;
+              End;
+
+              // Jump to property Last.
+              // must be String table after!
+              SetLength(WriteString, SizeOf(NewAttribute));
+              Move(NewAttribute, WriteString[1], Length(WriteString));
+              InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, KeepPosition + (AttributeCount*SizeOf(NewAttribute)), WriteString);
+
+              If NewName < 0 Then
+                 AppendStringPool(AName);
+              If NewValue < 0 Then
+                 AppendStringPool(AValue);
+
+              Result := 0;
+              Exit;
+           End;
+        End;
+     End;
+  End;
 end;
 
 function TAXMLParser.PopBYTEDataFromChunk: Byte;
@@ -951,6 +1078,7 @@ var
   NewValue: Longword;
   KeepPosition: Longword;
 begin
+  Result := -1;
   If (AIndex < 0) or (AIndex >= FChunkList.Count) Then Exit;
 
   WorkChunk := FChunkList[AIndex];
@@ -1023,6 +1151,8 @@ begin
                                 // for debug.
                                 // writeln( GetStringPool(NewValue) ) ;
                              End;
+
+                             Result := 0;
                           End;
                        End;
                     End;
