@@ -171,6 +171,8 @@ var
   OffsetStart,
   LastOffset: Longword;
   ReadStrLength: Longword;
+  WriteStringLength: Longword;
+  WorkWord: Word;
   WorkByte: Byte;
   WriteString: String;
   NewStringW: WideString;
@@ -234,11 +236,13 @@ begin
            WriteString := #0#0 + NewString + #0;
            WorkByte := Length(NewString);
            Move(WorkByte, WriteString[2], 1);
+           // Insert New String
            InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, FAXMLFileStream.Position, WriteString);
 
            NewPoolOffset := LastOffset + ReadStrLength + 3;
            SetLength(WriteString, SizeOf(NewPoolOffset));
            Move(NewPoolOffset, WriteString[1], SizeOf(NewPoolOffset));
+           // Insert PoolOffset
            InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, KeepPosition, WriteString);
 
            FAXMLFileStream.Position := OffsetStart;
@@ -258,16 +262,34 @@ begin
               ReadStrLength := ((ReadStrLength and $7FFF) shl 16) or PopWORDDataFromChunk;
            End;
 
-           PopSizeAssignedWideStr(ReadStrLength);
+           NewStringW := PopSizeAssignedWideStr(ReadStrLength);
+
+           PopWORDDataFromChunk; // jump last null space.
 
            // Convert Wide string.
            NewStringW := NewString;
            SetLength(WriteString, Length(NewString) * SizeOf(WideChar));
            Move(NewStringW[1], WriteString[1], Length(NewString) * SizeOf(WideChar));
-           WriteString := #0#0 + NewString + #0;
-           WorkByte := Length(NewString);
-           Move(WorkByte, WriteString[2], 1);
+           WriteString := #0#0 + WriteString + #0#0;
+           WriteStringLength := Length(WriteString);
+           WorkWord := Length(NewStringW);
+           Move(WorkWord, WriteString[1], 2);
+           // Insert New String
            InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, FAXMLFileStream.Position, WriteString);
+
+           NewPoolOffset := LastOffset + (ReadStrLength * SizeOf(WideChar)) + 4;
+           SetLength(WriteString, SizeOf(NewPoolOffset));
+           Move(NewPoolOffset, WriteString[1], SizeOf(NewPoolOffset));
+           // Insert PoolOffset = Last + NewString Full Length.
+           InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, KeepPosition, WriteString);
+
+           FAXMLFileStream.Position := OffsetStart;
+           IncToChunk(4); // String Pool offset
+           IncToChunk(WriteStringLength); // Style Pool offset
+
+           FAXMLFileStream.Position := ChunkStartPos + 4;
+           // Change ChunkSize (+4)
+           IncToChunk(4 + WriteStringLength);
         End;
 
      End;
@@ -984,11 +1006,23 @@ begin
                              Else
                                 NewValue := StringIndex;
 
+                             // Update RAW Value
+                             FAXMLFileStream.Position := KeepPosition + (LoopVar * SizeOf(TAttributeItem)) + (2*SizeOf(Longword));
+                             FAXMLFileStream.Write(NewValue, Sizeof(Longword));
                              FAXMLFileStream.Position := KeepPosition + (LoopVar * SizeOf(TAttributeItem)) + (4*SizeOf(Longword));
                              FAXMLFileStream.Write(NewValue, Sizeof(Longword));
 
+                             // for debug.
+                             //FAXMLFileStream.Position := KeepPosition + (LoopVar * SizeOf(TAttributeItem)) + (4*SizeOf(Longword));
+                             //FAXMLFileStream.Read(NewValue, Sizeof(Longword));
+                             //WriteLn(IntToStr(NewValue));
+
                              If StringIndex < 0 Then
-                                AppendStringPool(AReplaceValue); 
+                             Begin
+                                AppendStringPool(AReplaceValue);
+                                // for debug.
+                                // writeln( GetStringPool(NewValue) ) ;
+                             End;
                           End;
                        End;
                     End;
