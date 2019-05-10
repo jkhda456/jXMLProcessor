@@ -55,6 +55,14 @@ type
   end;
   PAbstractChunk = ^TAbstractChunk;
 
+  TNamespaceStack = record
+    Prefix: Longword;
+    Uri: Longword;
+    StartIdx,
+    EndIdx: Integer;
+  end;
+  PNamespaceStack = ^TNamespaceStack;
+
   TReadFlag = (rfXMLType, rfTagNameOnly, rfTagNamesLevel, rfTagLevel, rfTagAttributes, rfTagAttributeStringList);
   TReplaceFlag = (repfTagName, repfPropertyName, repfPrepertyValue);
   TMakeFlag = (mkfTag, mkfProperty);
@@ -65,6 +73,7 @@ type
 
     FHeader: Longword;
     FFullSize: Longword;
+    FNamespaceStack: TList;
     FChunkList: TList;
 
     FCursorFileOffset: Longword;
@@ -100,6 +109,8 @@ type
     procedure ResetCursor;
     function SearchTagInDepth(SearchTag: String): Integer;
     function CountTagInDepth: Integer;
+    function SearchNamespacePrefix(SearchPrefix: String): Longword;
+    function GetNamespacePrefix(NamespaceUriIndex: Longword): String;
     function GetTag(const ListIndex: Integer): String;
   public
     constructor Create;
@@ -380,16 +391,36 @@ begin
   FAXMLFileStream := Nil;
 
   FChunkList := TList.Create;
+  FNamespaceStack := TList.Create;
 end;
 
 destructor TAXMLParser.Destroy;
 begin
   ReleaseLists;
   FChunkList.Free;
+  FNamespaceStack.Free;
 
   ReleaseStream;
 
   inherited;
+end;
+
+function TAXMLParser.GetNamespacePrefix(
+  NamespaceUriIndex: Longword): String;
+var
+  LoopVar: Integer;
+begin
+  For LoopVar := 0 to FNamespaceStack.Count-1 do
+  Begin
+     With PNamespaceStack(FNamespaceStack[LoopVar])^ do
+     Begin
+        If Uri = NamespaceUriIndex Then
+        Begin
+           Result := GetStringPool(Prefix);
+           Exit;
+        End;
+     End;
+  End;
 end;
 
 function TAXMLParser.GetResourceId(const ResIdx: Integer): Integer;
@@ -558,6 +589,7 @@ end;
 function TAXMLParser.GetTag(const ListIndex: Integer): String;
 var
   WorkChunk: PAbstractChunk;
+  NameSpace,
   TagName: Longword;
   AttributeCount: Longword;
   LoopVar: Integer;
@@ -565,9 +597,16 @@ var
   AttributeData: PAttributeItem;
 
   function AttributeToStr(const InputAttribute: TAttributeItem): String;
+  var
+    AtrributeNamespaceUri: Longword;
   begin
+    AtrributeNamespaceUri := AttributeData^.Namespace;
     Result := GetStringPool(AttributeData^.Name);
-    
+    If (AtrributeNamespaceUri <> $FFFFFFFF) Then
+    Begin
+       Result := GetNamespacePrefix(AtrributeNamespaceUri) + ':' + Result;
+    End;
+
     Case InputAttribute.DataType of
        $00: Exit; // null
        //$01: // reference
@@ -611,7 +650,7 @@ begin
 
      PopDWORDDataFromChunk; // line number
      PopDWORDDataFromChunk; // comment
-     PopDWORDDataFromChunk; // namespace
+     NameSpace := PopDWORDDataFromChunk; // namespace
      TagName := PopDWORDDataFromChunk; // name
 
      Case ChunkType of
@@ -704,6 +743,7 @@ var
     ChunkHeaderSize = 8;
   var
     NewChunk: PAbstractChunk;
+    NewNamespace: PNamespaceStack;
   begin
     GetMem(NewChunk, SizeOf(TAbstractChunk));
     FChunkList.Add(NewChunk);
@@ -715,9 +755,41 @@ var
     NewChunk^.ChunkStartPos := 0;
     NewChunk^.ChunkEndPos := 0;
     NewChunk^.ChunkLevel := 0;
+
+    If NewChunk^.ChunkHeaderSize >= 4 Then
+    Begin
+       // Next is ChunkSize
+       FAXMLFileStream.Read(NewChunk^.ChunkSize, 4);
+
+       NewChunk^.ChunkStartPos := FAXMLFileStream.Position - ChunkHeaderSize;
+       NewChunk^.ChunkEndPos := FAXMLFileStream.Position + NewChunk^.ChunkSize - ChunkHeaderSize;
+
+       FAXMLFileStream.Position := NewChunk^.ChunkEndPos;
+    End;
+
     Case ParseChunk of
-       // CONST_RType_XMLStartNamespace:
-       // CONST_RType_XMLEndNamespace:
+       CONST_RType_XMLStartNamespace:
+       Begin
+          //
+          GetMem(NewNamespace, SizeOf(TNamespaceStack));
+          FNamespaceStack.Add(NewNamespace);
+
+          FAXMLFileStream.Position := NewChunk^.ChunkStartPos + 8;
+          PopDWORDDataFromChunk; // line number
+          PopDWORDDataFromChunk; // comment
+          NewNamespace^.Prefix := PopDWORDDataFromChunk;
+          NewNamespace^.Uri := PopDWORDDataFromChunk;
+          NewNamespace^.StartIdx := FChunkList.Count-1;
+
+          // for debug.
+          // writeln(IntToStr(Integer(NewNamespace)));
+          FAXMLFileStream.Position := NewChunk^.ChunkEndPos;
+       End;
+
+       CONST_RType_XMLEndNamespace:
+       Begin
+       End;
+       
        CONST_RType_XMLStartElement:
        Begin
           TagLevel := TagLevel + 1;
@@ -730,17 +802,7 @@ var
              TagLevel := TagLevel - 1;
        End;
     End;
-    
-    If NewChunk^.ChunkHeaderSize >= 4 Then
-    Begin
-       // Next is ChunkSize
-       FAXMLFileStream.Read(NewChunk^.ChunkSize, 4);
 
-       NewChunk^.ChunkStartPos := FAXMLFileStream.Position - ChunkHeaderSize;
-       NewChunk^.ChunkEndPos := FAXMLFileStream.Position + NewChunk^.ChunkSize - ChunkHeaderSize;
-
-       FAXMLFileStream.Position := NewChunk^.ChunkEndPos;
-    End;
   end;
 
 begin
@@ -843,6 +905,7 @@ var
   NewAttribute: TAttributeItem;
   KeepPosition: Longword;
   WriteString: String;
+  ParsedNamespace: String;
 begin
   Result := -1;
   If (AIndex < 0) or (AIndex >= FChunkList.Count) Then Exit;
@@ -875,14 +938,25 @@ begin
 
               KeepPosition := FAXMLFileStream.Position; // 2350 first.
 
-              // Make prepare!
-              NewName := SearchStringPool(AName);
-              NewValue := SearchStringPool(AValue);
-              MaxValueIndex := CountStringPool;
-
               // Make New Attribute
               Begin
-                 NewAttribute.Namespace := 0;
+                 NewAttribute.Namespace := $FFFFFFFF; // assign namespace uri
+                 StringIndex := Pos(':', AName);
+                 If StringIndex > 0 then // has namespace.
+                 Begin
+                    ParsedNamespace := Copy(AName, 1, StringIndex-1);
+                    NewAttribute.Namespace := SearchNamespacePrefix(ParsedNamespace);
+                    If (NewAttribute.Namespace <> $FFFFFFFF) Then
+                    Begin
+                       Delete(AName, 1, StringIndex);
+                    End;
+                 End;
+
+                 // Make prepare!
+                 NewName := SearchStringPool(AName);
+                 NewValue := SearchStringPool(AValue);
+                 MaxValueIndex := CountStringPool;
+
                  // set Name
                  If NewName < 0 Then
                  Begin
@@ -1050,11 +1124,23 @@ procedure TAXMLParser.ReleaseLists;
 var
   LoopVar: Integer;
 begin
-  For LoopVar := 0 to FChunkList.Count-1 do
+  If Assigned(FChunkList) then
   Begin
-     FreeMem(PAbstractChunk(FChunkList[LoopVar]));
+     For LoopVar := 0 to FChunkList.Count-1 do
+     Begin
+        FreeMem(PAbstractChunk(FChunkList[LoopVar]));
+     End;
+     FChunkList.Clear;
   End;
-  FChunkList.Clear;
+
+  If Assigned(FNamespaceStack) Then
+  Begin
+     For LoopVar := 0 to FNamespaceStack.Count-1 do
+     Begin
+        FreeMem(PNamespaceStack(FNamespaceStack[LoopVar]));
+     End;
+     FNamespaceStack.Clear;
+  End;
 end;
 
 procedure TAXMLParser.ReleaseStream;
@@ -1180,6 +1266,25 @@ begin
   (FAXMLFileStream as TMemoryStream).SaveToFile(AFileName);
 
   Result := 0;
+end;
+
+function TAXMLParser.SearchNamespacePrefix(SearchPrefix: String): Longword;
+var
+  LoopVar: Integer;
+begin
+  Result := $FFFFFFFF;
+  
+  For LoopVar := 0 to FNamespaceStack.Count-1 do
+  Begin
+     With PNamespaceStack(FNamespaceStack[LoopVar])^ do
+     Begin
+        If SearchPrefix = GetStringPool(Prefix) Then
+        Begin
+           Result := Uri;
+           Exit;
+        End;
+     End;
+  End;
 end;
 
 function TAXMLParser.SearchStringPool(TargetString: String): Integer;
