@@ -130,7 +130,7 @@ var
     End;
 
     // now start work!
-    If ParsedCommand = 'print' Then
+    If (ParsedCommand = 'print') Then
     Begin
        For LoopVar := StartIdx to EndIdx do
        Begin
@@ -161,6 +161,9 @@ var
           writeln(' - target,value pair not exists');
           Exit;
        End;
+
+       // for debug.
+       // Worker.AppendStringPool('TestAppending');
 
        For LoopVar := StartIdx to EndIdx do
        Begin
@@ -238,7 +241,11 @@ begin
   WorkJSON := Nil;
   Try
      WorkCommand := Trim(WorkCommand);
-     If Length(WorkCommand) <= 1 Then Exit;
+     If (Length(WorkCommand) <= 1) Then
+     Begin
+        // Default command is print.
+        WorkCommand := '{''command'':''print''}';
+     End;
 
      Case WorkCommand[1] of
         '{':

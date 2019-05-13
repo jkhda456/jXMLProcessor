@@ -102,7 +102,6 @@ type
     function GetResourceString(Id: Longword): String;
     function GetStringPool(const Index: Longword; Trimming: Boolean = True): String;
     function SearchStringPool(TargetString: String): Integer;
-    function AppendStringPool(NewString: String): Integer;
     function CountStringPool: Integer;
 
     // Cursor based function
@@ -117,6 +116,8 @@ type
     destructor Destroy;
 
     function IsValidAXML: Integer;  // Not work..
+
+    function AppendStringPool(NewString: String): Integer;
 
     function TagsCount: Integer;
     function ReadTags(AIndex: Integer; AReadFlag: TReadFlag; AFlag: Integer = 0): String;
@@ -190,6 +191,7 @@ var
   ReadStrLength: Longword;
   WriteStringLength: Longword;
   WorkWord: Word;
+  ModByte: Byte;
   WorkByte: Byte;
   WriteString: String;
   NewStringW: WideString;
@@ -252,6 +254,15 @@ begin
 
            WriteString := #0#0 + NewString + #0;
            WorkByte := Length(NewString);
+
+           // align check!
+           ModByte := (Length(WriteString) And $3);
+           If ModByte <> 0 Then
+           Begin
+              WriteString := WriteString + StringOfChar(#0, ModByte);
+              WorkByte := Length(WriteString);
+           End;
+
            Move(WorkByte, WriteString[2], 1);
            // Insert New String
            InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, FAXMLFileStream.Position, WriteString);
@@ -289,6 +300,15 @@ begin
            Move(NewStringW[1], WriteString[1], Length(NewString) * SizeOf(WideChar));
            WriteString := #0#0 + WriteString + #0#0;
            WriteStringLength := Length(WriteString);
+
+           // align check!
+           ModByte := (Length(WriteString) And $3);
+           If ModByte <> 0 Then
+           Begin
+              WriteString := WriteString + StringOfChar(#0, ModByte);
+              WriteStringLength := Length(WriteString);
+           End;
+
            WorkWord := Length(NewStringW);
            Move(WorkWord, WriteString[1], 2);
            // Insert New String
@@ -1263,7 +1283,18 @@ function TAXMLParser.SaveAsFile(AFileName: TFileName): Integer;
 begin
   Result := -1;
 
-  (FAXMLFileStream as TMemoryStream).SaveToFile(AFileName);
+  With (FAXMLFileStream as TMemoryStream) do
+  Begin
+     If Size <> FFullSize Then
+     Begin
+        FFullSize := Size;
+        FAXMLFileStream.Position := 4;
+        FAXMLFileStream.Write(FFullSize, 4);
+     End;
+     
+     // (FAXMLFileStream as TMemoryStream).
+     SaveToFile(AFileName);
+  End;
 
   Result := 0;
 end;
