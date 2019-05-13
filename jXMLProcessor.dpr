@@ -5,7 +5,9 @@
 
 program jXMLProcessor;
 
+{$IFDEF MSWINDOWS}
 {$APPTYPE CONSOLE}
+{$ENDIF}
 
 uses
   SysUtils,
@@ -150,6 +152,7 @@ var
        Begin
           If Worker.MakeTags(LoopVar, mkfProperty, $03, WorkCommand.getStringSlient('name'), WorkCommand.getStringSlient('value')) = 0 Then Exit;
        End;
+       ExitCode := -1;
     End
     Else If ParsedCommand = 'change-property-value' Then
     Begin
@@ -163,6 +166,7 @@ var
        Begin
           If Worker.RepleaceTags(LoopVar, repfPrepertyValue, $03, WorkCommand.getStringSlient('target'), WorkCommand.getStringSlient('value')) = 0 Then Exit;
        End;
+       ExitCode := -1;
     End;
 
   end;
