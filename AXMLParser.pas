@@ -950,7 +950,9 @@ begin
            Begin
               FillChar(NewAttribute, SizeOf(NewAttribute), 0);
 
-              IncDWORDData( SizeOf(NewAttribute) ); // attribute size
+              PopWORDDataFromChunk; // attributeStart
+              PopWORDDataFromChunk; // attributeSize (structure size)
+
               AttributeCount := IncWORDData(1); // attribute count
               PopWORDDataFromChunk; // id index
               PopWORDDataFromChunk; // class index
