@@ -63,7 +63,7 @@ type
   end;
   PNamespaceStack = ^TNamespaceStack;
 
-  TReadFlag = (rfXMLType, rfTagNameOnly, rfTagNamesLevel, rfTagLevel, rfTagAttributes, rfTagAttributeStringList);
+  TReadFlag = (rfXMLType, rfTagNameOnly, rfTagNamesLevel, rfTagLevel, rfTagAttributes, rfTagAttributeStringList, rfAnalysis);
   TReplaceFlag = (repfTagName, repfPropertyName, repfPrepertyValue);
   TMakeFlag = (mkfTag, mkfProperty);
 
@@ -100,6 +100,7 @@ type
     // Position unsafe methods
     function GetResourceId(const ResIdx: Integer): Integer;
     function GetResourceString(Id: Longword): String;
+    function GetResourceIndex(const ResourceStr: String): Integer;
     function GetStringPool(const Index: Longword; Trimming: Boolean = True): String;
     function SearchStringPool(TargetString: String): Integer;
     function CountStringPool: Integer;
@@ -111,6 +112,7 @@ type
     function SearchNamespacePrefix(SearchPrefix: String): Longword;
     function GetNamespacePrefix(NamespaceUriIndex: Longword): String;
     function GetTag(const ListIndex: Integer): String;
+    function GetStream(const ListIndex: Integer): String;
   public
     constructor Create;
     destructor Destroy;
@@ -480,6 +482,21 @@ begin
   End;
 end;
 
+function TAXMLParser.GetResourceIndex(const ResourceStr: String): Integer;
+var
+  LoopVar: Integer;
+begin
+  Result := -1;
+  For LoopVar := Low(CONST_ResourceStr) to High(CONST_ResourceStr) do
+  Begin
+     If CONST_ResourceStr[LoopVar] = ResourceStr Then
+     Begin
+        Result := LoopVar;
+        Exit;
+     End;
+  End; 
+end;
+
 function TAXMLParser.GetResourceString(Id: Longword): String;
 var
   ParseId: Longword;
@@ -489,6 +506,46 @@ begin
   If ParseId <= High(CONST_ResourceStr) Then
   Begin
      Result := CONST_ResourceStr[ParseId];
+  End;
+end;
+
+function TAXMLParser.GetStream(const ListIndex: Integer): String;
+var
+  WorkChunk: PAbstractChunk;
+  ChunkCalcSize: Integer;
+  ReadBuffer: String;
+
+  function StringToHex(const S: string): string;
+  var
+    LoopVar: Integer;
+  begin
+    Result := '';
+    For LoopVar := 1 to Length(S) do
+    Begin
+       Result := Result + IntToHex( Byte( S[LoopVar] ), 2 ) + ' ';
+       If (LoopVar Mod 16) = 0 Then
+          Result := Result + #13#10;
+    End;
+  end;
+
+begin
+  Result := '';
+  If (ListIndex < 0) or (ListIndex >= FChunkList.Count) Then Exit;
+  If Not Assigned(FAXMLFileStream) Then Exit;
+
+  WorkChunk := FChunkList[ListIndex];
+
+  With WorkChunk^ do
+  Begin
+     // SetLength(ReadBuffer,
+     FAXMLFileStream.Position := ChunkStartPos;
+     ChunkCalcSize := ChunkEndPos - ChunkStartPos;
+     If ChunkCalcSize <= 0 Then Exit;
+
+     SetLength(ReadBuffer, ChunkCalcSize);
+     FAXMLFileStream.Read(ReadBuffer[1], ChunkCalcSize);
+
+     Result := StringToHex(ReadBuffer);
   End;
 end;
 
@@ -918,12 +975,15 @@ var
   TagName: Longword;
   AttributeCount: Longword;
   LoopVar: Integer;
+  AttributeList: TList;
   AttributeData: PAttributeItem;
   StringIndex: Integer;
   MaxValueIndex: Longword;
-  NewName, NewValue: Integer;
+  NewName, NewValue, NewNameResIndex, InsertAttrIndex: Integer;
   NewAttribute: TAttributeItem;
   KeepPosition: Longword;
+  PrevAttributeIndex: Integer;
+  PrevAttributeName: String;
   WriteString: String;
   ParsedNamespace: String;
 begin
@@ -973,6 +1033,8 @@ begin
                        Delete(AName, 1, StringIndex);
                     End;
                  End;
+                 // For Add index.
+                 NewNameResIndex := GetResourceIndex(AName);
 
                  // Make prepare!
                  NewName := SearchStringPool(AName);
@@ -997,11 +1059,45 @@ begin
                  NewAttribute.Data := NewAttribute.RawValue;
               End;
 
+              // set defaultInsertIndex
+              InsertAttrIndex := -1;
+              AttributeList := TList.Create;
+              Try
+                 FAXMLFileStream.Position := KeepPosition;
+                 For LoopVar := 1 to AttributeCount do
+                 Begin
+                    GetMem(AttributeData, SizeOf(TAttributeItem));
+                    PopUserData(AttributeData^, SizeOf(TAttributeItem));
+
+                    AttributeList.Add( AttributeData );
+                 End;
+
+                 For LoopVar := 0 to AttributeList.Count-1 do
+                 Begin
+                    AttributeData := AttributeList[LoopVar];
+                    If (InsertAttrIndex < 0) Then
+                    Begin
+                       PrevAttributeName := GetStringPool(AttributeData^.Name);
+                       PrevAttributeIndex := GetResourceIndex(PrevAttributeName);
+                       If (PrevAttributeIndex < 0) or (PrevAttributeIndex > NewNameResIndex) Then
+                       Begin
+                          InsertAttrIndex := LoopVar;
+                       End;
+                    End;
+
+                    FreeMem(AttributeData);
+                 End;
+              Finally
+                 AttributeList.Free;
+              End;
+              If InsertAttrIndex < 0 Then
+                 InsertAttrIndex := AttributeCount;
+
               // Jump to property Last.
               // must be String table after!
               SetLength(WriteString, SizeOf(NewAttribute));
               Move(NewAttribute, WriteString[1], Length(WriteString));
-              InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, KeepPosition + (AttributeCount*SizeOf(NewAttribute)), WriteString);
+              InsertStringToMemoryStream(FAXMLFileStream as TMemoryStream, KeepPosition + (InsertAttrIndex*SizeOf(NewAttribute)), WriteString);
 
               If NewName < 0 Then
                  AppendStringPool(AName);
@@ -1100,6 +1196,11 @@ begin
         End;
 
         Result := Result + GetTag(AIndex);
+     End;
+
+     rfAnalysis:
+     Begin
+        Result := GetTag(AIndex) + #13#10 + GetStream(AIndex) + #13#10;
      End;
 
      rfTagNameOnly:

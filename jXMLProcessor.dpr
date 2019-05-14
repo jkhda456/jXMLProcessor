@@ -19,7 +19,8 @@ const
   NameStr = 'Jkh''s Android XML Processor';
   VersionStr = 'Version 0.1';
   HelpStr = #13#10' > %s --input [TargetFile] --output [TargetFile] --command [Command] --filecommand [Filename] --option [filestream]';
-  CommandHelpStr = #13#10'   Command example'#13#10'   {''select-node'':[''application'', ''uses-sdk''],'#13#10'    ''command'':''make-tag|rename-tag|remove-tag|make-property|rename-property|remove-property|change-property-value|print'','#13#10'    ''taget'':''...'', ''name'':''...'', ''value'':''...'', ''option'':''...''';
+  CommandHelpStr = #13#10'   Command example'#13#10'   {''select-node'':[''application'', ''uses-sdk''],'#13#10'    ''command'':''make-property|change-property-value|print|analysis'','#13#10'    ''taget'':''...'', ''name'':''...'', ''value'':''...'', ''option'':''...''';
+  // make-tag|rename-tag|remove-tag|rename-property|remove-property| // not yet
   ErrorCodeStr = 'Error code : %d';
 
 var
@@ -135,6 +136,16 @@ var
        For LoopVar := StartIdx to EndIdx do
        Begin
           LineStr := Worker.ReadTags(LoopVar, rfXMLType, 1);
+          If LineStr = '' Then Continue;
+
+          writeln(LineStr);
+       End;
+    End
+    Else If (ParsedCommand = 'analysis') Then
+    Begin
+       For LoopVar := StartIdx to EndIdx do
+       Begin
+          LineStr := Worker.ReadTags(LoopVar, rfAnalysis, 1);
           If LineStr = '' Then Continue;
 
           writeln(LineStr);
