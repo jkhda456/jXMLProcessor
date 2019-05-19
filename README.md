@@ -1,4 +1,9 @@
 # jXMLProcessor
-Jkh's AXML Processor - (incomplete)
+Jkh's AXML Processor
 
- delphi / freepascal (delphi mode)
+jXMLProcessor provides edit the binary XML file for android
+
+Features
+- a pure object pascal interface
+- partially editable
+- no platform constraints
