@@ -77,6 +77,7 @@ type
     FChunkList: TList;
 
     FCursorFileOffset: Longword;
+    FPrintInitParsePos: Boolean;
 
     // Utils
     function PopBYTEDataFromChunk: Byte;
@@ -117,6 +118,7 @@ type
     constructor Create;
     destructor Destroy;
 
+    function ReloadAXMLStream: Integer;
     function IsValidAXML: Integer;  // Not work..
 
     function AppendStringPool(NewString: String): Integer;
@@ -129,6 +131,8 @@ type
 
     function SaveAsFile(AFileName: TFileName): Integer;
     function LoadFromFile(AFileName: TFileName; AOnMemory: Boolean = True): Integer;
+
+    property PrintInitParsePos: Boolean read FPrintInitParsePos write FPrintInitParsePos;
   end;
 
 implementation
@@ -194,7 +198,7 @@ var
   WriteStringLength: Longword;
   WorkWord: Word;
   ModByte: Byte;
-  WorkByte: Byte;
+  WriteStringLengthByte, WorkByte: Byte;
   WriteString: String;
   NewStringW: WideString;
 
@@ -262,7 +266,7 @@ begin
            If ModByte <> 0 Then
            Begin
               WriteString := WriteString + StringOfChar(#0, ModByte);
-              WorkByte := Length(WriteString);
+              WriteStringLengthByte := Length(WriteString);
            End;
 
            Move(WorkByte, WriteString[2], 1);
@@ -281,7 +285,7 @@ begin
 
            FAXMLFileStream.Position := ChunkStartPos + 4;
            // Change ChunkSize (+4)
-           IncToChunk(4 + Length(NewString) + 3);
+           IncToChunk(4 + WriteStringLengthByte);
         End
         Else
         Begin
@@ -410,6 +414,7 @@ constructor TAXMLParser.Create;
 begin
   inherited;
 
+  FPrintInitParsePos := False;
   FAXMLFileStream := Nil;
 
   FChunkList := TList.Create;
@@ -884,6 +889,7 @@ var
 
 begin
   Result := -10;
+  ReleaseLists;
   If Not Assigned(FAXMLFileStream) Then Exit;
 
   // Check Size
@@ -904,12 +910,18 @@ begin
   // Prepare Safe Size Position
   FAXMLFileStream.Read(FFullSize, 4);
 
+  If FPrintInitParsePos Then
+     WriteLn('parser init...');
+
   // ReadChunk
   While True do
   Begin
      ReadSize := FAXMLFileStream.Read(ParseChunk, 2);
      // if not exists..
      If (ReadSize < 2) or (FFullSize <= FAXMLFileStream.Position) Then Break;
+
+     If FPrintInitParsePos Then
+        WriteLn(IntToStr(FAXMLFileStream.Position) + '(0x'+IntToHex(FAXMLFileStream.Position, 8)+') : ' + IntToStr(ParseChunk));
 
      Case ParseChunk of
         // Null Chunk is Exit!
@@ -945,7 +957,6 @@ function TAXMLParser.LoadFromFile(AFileName: TFileName; AOnMemory: Boolean): Int
 begin
   Result := -1;
   ReleaseStream;
-  ReleaseLists;
 
   Result := -2;
   If Not FileExists(AFileName) Then Exit;
@@ -1270,6 +1281,11 @@ procedure TAXMLParser.ReleaseStream;
 begin
   If Assigned(FAXMLFileStream) Then FAXMLFileStream.Free;
   FAXMLFileStream := Nil;
+end;
+
+function TAXMLParser.ReloadAXMLStream: Integer;
+begin
+  Result := LoadAXMLStream;
 end;
 
 function TAXMLParser.RepleaceTags(AIndex: Integer;

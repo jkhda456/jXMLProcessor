@@ -143,6 +143,12 @@ var
     End
     Else If (ParsedCommand = 'analysis') Then
     Begin
+       Worker.PrintInitParsePos := True;
+       // must reload for analysis
+       writeln('Stream LoadState : ' + IntToStr(Worker.ReloadAXMLStream));
+       // header only.
+       If WorkCommand.getBooleanSlient('headeronly') Then Exit;
+
        For LoopVar := StartIdx to EndIdx do
        Begin
           LineStr := Worker.ReadTags(LoopVar, rfAnalysis, 1);
