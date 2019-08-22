@@ -63,9 +63,11 @@ type
   end;
   PNamespaceStack = ^TNamespaceStack;
 
+  // attributes count does not exist (for reliability)
   TReadFlag = (rfXMLType, rfTagNameOnly, rfTagNamesLevel, rfTagLevel, rfTagAttributes, rfTagAttributeStringList, rfAnalysis);
   TReplaceFlag = (repfTagName, repfPropertyName, repfPrepertyValue);
   TMakeFlag = (mkfTag, mkfProperty);
+  TTagOutputFormat = (tofDefault, tofStringList);
 
   TAXMLParser = class
   private
@@ -112,7 +114,7 @@ type
     function CountTagInDepth: Integer;
     function SearchNamespacePrefix(SearchPrefix: String): Longword;
     function GetNamespacePrefix(NamespaceUriIndex: Longword): String;
-    function GetTag(const ListIndex: Integer): String;
+    function GetTag(const ListIndex: Integer; TagType: TTagOutputFormat = tofDefault; ProcessNamespace: Boolean = True): String;
     function GetStream(const ListIndex: Integer): String;
   public
     constructor Create;
@@ -124,6 +126,8 @@ type
     function AppendStringPool(NewString: String): Integer;
 
     function TagsCount: Integer;
+    // rfXMLType                : AFlag - tab control. (1 : on)
+    // rfTagAttributeStringList : AFlag - namespace control. (0: off, 1: on)
     function ReadTags(AIndex: Integer; AReadFlag: TReadFlag; AFlag: Integer = 0): String;
     // AValueType must be $03!!!
     function RepleaceTags(AIndex: Integer; AReplaceFlag: TReplaceFlag; AValueType: Integer; ASearchValue, AReplaceValue: String): Integer;
@@ -160,6 +164,8 @@ const
   CONST_RType_TableType = $0201;
   CONST_RType_TableTypeSpec = $0202;
   CONST_RType_TableLibrary = $0203;
+
+  CONST_BoolToStr: Array[Boolean] of string = ('false', 'true');
 
 // copy code lol
 procedure InsertStringToMemoryStream(MS: TMemoryStream;
@@ -668,7 +674,7 @@ begin
   End;
 end;
 
-function TAXMLParser.GetTag(const ListIndex: Integer): String;
+function TAXMLParser.GetTag(const ListIndex: Integer; TagType: TTagOutputFormat; ProcessNamespace: Boolean): String;
 var
   WorkChunk: PAbstractChunk;
   NameSpace,
@@ -677,23 +683,25 @@ var
   LoopVar: Integer;
   AttributeList: TList;
   AttributeData: PAttributeItem;
+  TagValueStr: String;
 
   function AttributeToStr(const InputAttribute: TAttributeItem): String;
   var
     AtrributeNamespaceUri: Longword;
+    AttributeValue: String;
   begin
     AtrributeNamespaceUri := AttributeData^.Namespace;
     Result := GetStringPool(AttributeData^.Name);
-    If (AtrributeNamespaceUri <> $FFFFFFFF) Then
+    If (AtrributeNamespaceUri <> $FFFFFFFF) and ProcessNamespace Then
     Begin
        Result := GetNamespacePrefix(AtrributeNamespaceUri) + ':' + Result;
     End;
 
     Case InputAttribute.DataType of
        $00: Exit; // null
-       //$01: // reference
+       $01: AttributeValue := '@' + IntToStr(AttributeData^.Data); // reference
        //$02: // attribute
-       $03: Result := Result + '="' + GetStringPool(AttributeData^.Data) + '"'; // string
+       $03: AttributeValue := GetStringPool(AttributeData^.Data); // string
        //$04: // float
        //$05: // dimension
        //$06: // fraction
@@ -701,8 +709,8 @@ var
 
        // $10: // frist int
        //$10: // int dec
-       //$11: // int hex
-       //$12: // int bool
+       $11: AttributeValue := '@' + IntToHex(AttributeData^.Data, 8); // int hex
+       $12: AttributeValue := CONST_BoolToStr[(AttributeData^.Data and 1) = 1]; // int bool
 
        // $1C: // first color
        //$1C: // #AArrggbb
@@ -713,7 +721,13 @@ var
 
        // $1F: // last int
     Else
-       Result := Result + '=' + IntToStr(AttributeData^.Data)
+       AttributeValue := GetStringPool(AttributeData^.Data);
+       // Result := Result + '="' + IntToStr(AttributeData^.Data) + '"'
+    End;
+
+    Case TagType of
+       tofDefault: Result := Result + '="' + AttributeValue + '"';
+       tofStringList: Result := Result + '=' + AttributeValue;
     End;
   end;
 begin
@@ -754,25 +768,46 @@ begin
                  AttributeList.Add( AttributeData );
               End;
 
-              Result := GetStringPool(TagName);
+              TagValueStr := GetStringPool(TagName);
+              Result := TagValueStr;
               
               For LoopVar := 0 to AttributeList.Count-1 do
               Begin
                  AttributeData := AttributeList[LoopVar];
-                 Result := Result + ' ' + AttributeToStr(AttributeData^);
+
+                 // dup PushValueToResult.
+                 Case TagType of
+                    tofDefault: Result := Result + ' ' + AttributeToStr(AttributeData^);
+                    tofStringList: Result := Result + #13#10 + AttributeToStr(AttributeData^);
+                 End;
+
                  FreeMem(AttributeData);
               End;
            Finally
               AttributeList.Free;
            End;
+
+           // manifest have namespace assign
+           If (LowerCase(TagValueStr) = 'manifest') and (TagType = tofDefault) Then
+           Begin
+              For LoopVar := 0 to FNamespaceStack.Count-1 do
+              Begin
+                 With PNamespaceStack(FNamespaceStack[LoopVar])^ do
+                 Begin
+                    Result := Result + #13#10 + 'xmlns:' + GetStringPool(Prefix) + '="'+GetStringPool(Uri)+'"'
+                 End;
+              End;
+           End;
         End;
         CONST_RType_XMLEndElement:
         Begin
-           Result := '/' + GetStringPool(TagName);
+           If TagType = tofDefault Then
+              Result := '/' + GetStringPool(TagName);
         End;
      End;
 
-     Result := '<' + Result + '>';
+     If TagType = tofDefault Then
+        Result := '<' + Result + '>';
   End;
 end;
 
@@ -1211,11 +1246,18 @@ begin
 
      rfAnalysis:
      Begin
-        Result := GetTag(AIndex) + #13#10 + GetStream(AIndex) + #13#10;
+        Result := 'Index : ' + IntToStr(AIndex) + #13#10 + GetTag(AIndex) + #13#10 + GetStream(AIndex) + #13#10;
      End;
 
      rfTagNameOnly:
      Begin
+        // If (WorkChunk^.ChunkType = CONST_RType_XMLEndElement) Then Exit;
+        Result := '';
+        If (WorkChunk^.ChunkType <> CONST_RType_XMLStartElement) Then Exit;
+
+        FAXMLFileStream.Position := WorkChunk^.ChunkStartPos + 20;
+        StrIdx := PopDWORDDataFromChunk;
+        Result := GetStringPool(StrIdx);
      End;
 
      rfTagNamesLevel:
@@ -1250,6 +1292,7 @@ begin
 
      rfTagAttributeStringList:
      Begin
+        Result := GetTag(AIndex, tofStringList, (AFlag = 1));
      End;
   End;
 end;
